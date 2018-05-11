@@ -7,6 +7,8 @@ from sklearn.neighbors import KDTree
 from telegram.ext import Updater
 from telegram.ext import CommandHandler
 from telegram.ext import MessageHandler, Filters
+import time
+import sys
 
 TELEGRAM_TOKEN = '521985001:AAFjybE5ZOIlxdSzozxjPa0Gx0lU1EqIzC4'
 MAPS_TOKEN = 'AIzaSyCwkxYSmXosfXb6_YtmbE5USz8OigOHjws'
@@ -20,6 +22,7 @@ MAX_DIST = 0.5  # in km
 class TelegramBot(object):
 
     def __init__(self):
+        startTime = time.time()
         self.updater = Updater(token=TELEGRAM_TOKEN)
         self.dispatcher = self.updater.dispatcher
         self.n_atm = N_ATM
@@ -29,6 +32,8 @@ class TelegramBot(object):
         self.dispatcher.add_handler(CommandHandler('link', self.command))
         self.dispatcher.add_handler(CommandHandler('banelco', self.command))
         self.dispatcher.add_handler(MessageHandler(Filters.location, self.location))
+        endTime = time.time()
+        print("init time: "+str(startTime - endTime))
 
     def start(self, bot, update):
         bot.send_message(chat_id=update.message.chat_id, text="Hola!!! Soy el bot más inteligete de Banjampp!")
@@ -53,14 +58,17 @@ class TelegramBot(object):
                 break
         user_lat = update.message.location.latitude
         user_lon = update.message.location.longitude
+        startTime = time.time()
         df = self.atm_locator.lookup(user_lat, user_lon, atm_type)
+        endTime = time.time()
+        print("atm_locator lookup: " + str(startTime - endTime))
         bot.send_message(chat_id=update.message.chat_id, text=self.generate_resp_msg(df))
         bot.send_message(chat_id=update.message.chat_id, text=self.generate_static_map(user_lat, user_lon, df))
 
+    # bien -0.0006422996520996094
     def generate_resp_msg(self, df):
         resp_msg = ""
         i = 1
-
         msg = "{}) El Banco: {} posee {} teminal(es) de la red {} y se encuentra ubicado en {}\n"
 
         for index, row in df.iterrows():
@@ -68,15 +76,16 @@ class TelegramBot(object):
             i += 1
         return resp_msg
 
+    # bien -0.0023131370544433594
     def generate_static_map(self, user_lat, user_lon, df):
         center = '{},{}'.format(str(user_lat), str(user_lon))
         size = '500x400'
         zoom = '15'
         marker = '&markers=color:{}|label:{}|{}'
         i = 1
-
         params = 'center={}&size={}&zoom={}&key={}'.format(center, size, zoom, MAPS_TOKEN)
         params += marker.format("blue", "V", center)
+
         for index, row in df.iterrows():
             params += marker.format("red", str(i), "{},{}".format(row['LAT'], row['LNG']))
             i += 1
@@ -90,10 +99,7 @@ class AtmLocator(object):
 
     def __init__(self):
         self.df = self.clean_dataset()
-        self.dfLink = self.df[self.df['RED'] == "link".upper()]
-        self.dfBanelco = self.df[self.df['RED'] == "banelco".upper()]
-        self.treeBanelco = KDTree(self.dfBanelco[['LAT', 'LNG']], leaf_size=2)
-        self.treeLink = KDTree(self.dfLink[['LAT', 'LNG']], leaf_size=2)
+        self.tree = KDTree(np.array(self.df[['LAT', 'LNG', 'RED_CODE']]), leaf_size=3)
 
     def clean_dataset(self):
         df = pd.read_csv(CSV_FILE, sep=';')
@@ -101,26 +107,26 @@ class AtmLocator(object):
         dfFilteredNoNan = dfFiltered.dropna(axis=0, how='any')
         dfFilteredNoNan['LAT'] = dfFilteredNoNan['LAT'].apply(lambda s: s.replace(',', '.'))
         dfFilteredNoNan['LNG'] = dfFilteredNoNan['LNG'].apply(lambda s: s.replace(',', '.'))
+        dfFilteredNoNan['RED_CODE'] = dfFilteredNoNan['RED'].apply(lambda red: 1 if red == "BANELCO" else 0)
         # dfFilteredNoNan = dfFilteredNoNan[dfFilteredNoNan['TERMINALES'] >= MIN_ATM_BANK] #this line remove locations with 0 atm
         return dfFilteredNoNan
 
     def lookup(self, user_lat, user_lon, atm_type):
 
-        user_location = np.array([[user_lat, user_lon]])
-        if atm_type == "banelco":
-            print("banelco")
-            dist, ind = self.treeBanelco.query(user_location, k=N_ATM)
-        else:
-            print("link")
-            dist, ind = self.treeLink.query(user_location, k=N_ATM)
 
+        startTime = time.time()
+        user_location = np.array([[user_lat, user_lon, 1 if atm_type == "banelco" else 0]])
+        dist, ind = self.tree.query(user_location, k=N_ATM)
+        endTime = time.time()
+        print("TIME looking KDTree: " + str(endTime - startTime))
         print(ind)
         print(dist)
-        df_temp = pd.DataFrame(self.dfLink[self.dfLink['RED']], index=ind[0], columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO'])
-        print(df_temp)
-        print("---------------------------------------------------")
-        # df_temp = df_temp[df_temp['RED'] == atm_type.upper()]
-        # print(df_temp)
+        startTime = time.time()
+        df_temp = pd.DataFrame(self.df, index=ind[0], columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO'])
+        endTime = time.time()
+        print("time creating df_temp: " + str(endTime - startTime))
+
+        startTime = time.time()
         df_temp['ORIGIN_LAT'] = user_lat
         df_temp['ORIGIN_LNG'] = user_lon
         df_temp['LAT'] = pd.to_numeric(df_temp['LAT'], downcast='float')
@@ -132,6 +138,8 @@ class AtmLocator(object):
 
         df_temp['DIST'] = self.haversine_np(user_lon, user_lat, dest_lon, dest_lat)
         df_temp = df_temp[df_temp['DIST'] <= MAX_DIST]
+        endTime = time.time()
+        print("time for haversine_np:" + str(endTime - startTime))
         return df_temp
 
     def haversine_np(self, lon1, lat1, lon2, lat2):
