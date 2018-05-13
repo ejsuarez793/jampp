@@ -1,12 +1,9 @@
 # coding=utf-8
-import logging
 import pandas as pd
 import numpy as np
 import telegram
 from sklearn.neighbors import KDTree
-from telegram.ext import Updater
-from telegram.ext import CommandHandler
-from telegram.ext import MessageHandler, Filters
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import time
 import sys
 
@@ -47,7 +44,7 @@ class TelegramBot(object):
                                            request_contact=None,
                                            request_location=True)
         reply_markup = telegram.ReplyKeyboardMarkup([[keyboard]])
-        bot.send_message(chat_id=update.message.chat_id, 
+        bot.send_message(chat_id=update.message.chat_id,
                          text=text,
                          reply_markup=reply_markup)
 
@@ -63,6 +60,7 @@ class TelegramBot(object):
                 break
 
         df = self.atm_locator.lookup(user_lat, user_lon, atm_type)
+        print(df)
         bot.send_message(chat_id=update.message.chat_id,
                          text=self.generate_resp_msg(df))
         bot.send_message(chat_id=update.message.chat_id,
@@ -72,10 +70,10 @@ class TelegramBot(object):
     def generate_resp_msg(self, df):
         resp_msg = ""
         i = 1
-        msg = "{})\nEl Banco: {} posee {} teminal(es) de la red {} y se encuentra ubicado en {}\n\n"
+        msg = "{})\nEl Banco: {} posee {} teminal(es) de la red {} con un aprox. de {} retiros disponibles y se encuentra ubicado en {}\n\n"
 
         for index, row in df.iterrows():
-            resp_msg += msg.format(str(i), row['BANCO'], str(row['TERMINALES']), row['RED'], row['DOM_GEO'])
+            resp_msg += msg.format(str(i), row['BANCO'], str(row['TERMINALES']), row['RED'], str(row['RECARGAS']), row['DOM_GEO'])
             i += 1
 
         return resp_msg
@@ -113,32 +111,34 @@ class AtmLocator(object):
         dfFilteredNoNan = dfFiltered.dropna(axis=0, how='any')
         # change float 0,0 notation to 0.0
         dfFilteredNoNan.loc[:, 'LAT'] = dfFilteredNoNan['LAT'].apply(lambda s: float(s.replace(',', '.')))
-        dfFilteredNoNan.loc[:, 'LNG'] = dfFilteredNoNan['LNG'].apply(lambda s:  float(s.replace(',', '.')))
+        dfFilteredNoNan.loc[:, 'LNG'] = dfFilteredNoNan['LNG'].apply(lambda s: float(s.replace(',', '.')))
         # create new column with RED_CODE, used to build 3D-Tree
         dfFilteredNoNan.loc[:, 'RED_CODE'] = dfFilteredNoNan['RED'].apply(lambda red: 1 if red == "BANELCO" else 0)
         dfFilteredNoNan.loc[:, 'DRAW'] = 0
         dfFilteredNoNan.loc[:, 'RECARGAS'] = dfFilteredNoNan['TERMINALES'] * 1000
-        # this line remove locations with 0 atm
+        # this line remove locations with 0 atm, but LINK atm all have 0 from dataset
         # dfFilteredNoNan = dfFilteredNoNan[dfFilteredNoNan['TERMINALES'] >= MIN_ATM_BANK]
 
         return dfFilteredNoNan
 
     def lookup(self, user_lat, user_lon, atm_type):
 
-        df_temp, ind = self.__query(user_lat, user_lon,atm_type)
+        df_temp, ind = self.__query(user_lat, user_lon, atm_type)
         df_temp = self.__distance_calc(user_lat, user_lon, df_temp)
         self.__money_draw(df_temp.index.values)
 
         return df_temp
 
     def __query(self, user_lat, user_lon, atm_type):
-        user_location = np.array([[user_lat, user_lon, 1 if atm_type == "banelco" else 0]])
+        user_location = np.array([[user_lat,
+                                   user_lon,
+                                   1 if atm_type == "banelco" else 0]])
 
         dist, ind = self.tree.query(user_location, k=N_ATM)
 
         return (pd.DataFrame(self.df,
                              index=ind[0],
-                             columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO', 'DRAW']),
+                             columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO', 'DRAW', 'RECARGAS']),
                 ind)
 
     def __distance_calc(self, user_lat, user_lon, df_temp):
@@ -173,6 +173,9 @@ class AtmLocator(object):
         while i < ind.size:
             actual_values.append(values[i])
 
+            """if there is only one atm close, prob of drawing money from it is 1
+               if there is two atm, prob of each is [0.75, 0.25]
+               if there is three atm, prob of each is [0.7, 0.2, 0.1]"""
             if ind.size == 1:
                 actual_p.append(1)
             elif ind.size == 2:
