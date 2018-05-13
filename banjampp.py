@@ -98,31 +98,35 @@ class AtmLocator(object):
         self.df = self.clean_dataset()
         # Create a 3D-Tree with RED_CODE as 1 if RED values are 'BANELCO' and 0 if they're 'LINK'
         self.tree = KDTree(np.array(self.df[['LAT', 'LNG', 'RED_CODE']]), leaf_size=3)
+        self.history = {}
+        self.buffer = []
 
     def clean_dataset(self):
         df = pd.read_csv(CSV_FILE, sep=';')
         dfFiltered = df.filter(items=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO'])
         dfFilteredNoNan = dfFiltered.dropna(axis=0, how='any')
         # change float 0,0 notation to 0.0
-        dfFilteredNoNan['LAT'] = dfFilteredNoNan['LAT'].apply(lambda s: float(s.replace(',', '.')))
-        dfFilteredNoNan['LNG'] = dfFilteredNoNan['LNG'].apply(lambda s:  float(s.replace(',', '.')))
+        dfFilteredNoNan.loc[:, 'LAT'] = dfFilteredNoNan['LAT'].apply(lambda s: float(s.replace(',', '.')))
+        dfFilteredNoNan.loc[:, 'LNG'] = dfFilteredNoNan['LNG'].apply(lambda s:  float(s.replace(',', '.')))
         # create new column with RED_CODE, used to build 3D-Tree
-        dfFilteredNoNan['RED_CODE'] = dfFilteredNoNan['RED'].apply(lambda red: 1 if red == "BANELCO" else 0)
+        dfFilteredNoNan.loc[:, 'RED_CODE'] = dfFilteredNoNan['RED'].apply(lambda red: 1 if red == "BANELCO" else 0)
+        dfFilteredNoNan.loc[:, 'DRAW'] = 0
         # this line remove locations with 0 atm
         # dfFilteredNoNan = dfFilteredNoNan[dfFilteredNoNan['TERMINALES'] >= MIN_ATM_BANK]
+
         return dfFilteredNoNan
 
     def lookup(self, user_lat, user_lon, atm_type):
 
-
         startTime = time.time()
         # user_location with 3 axis
         user_location = np.array([[user_lat, user_lon, 1 if atm_type == "banelco" else 0]])
+        print(user_location)
         dist, ind = self.tree.query(user_location, k=N_ATM)
         endTime = time.time()
         print("TIME looking KDTree: " + str(endTime - startTime))
         startTime = time.time()
-        df_temp = pd.DataFrame(self.df, index=ind[0], columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO'])
+        df_temp = pd.DataFrame(self.df, index=ind[0], columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO', 'DRAW'])
         endTime = time.time()
         print("time creating df_temp: " + str(endTime - startTime))
 
@@ -134,8 +138,18 @@ class AtmLocator(object):
                                             df_temp['LAT'].as_matrix(), 
                                             df_temp['LNG'].as_matrix())
         df_temp = df_temp[df_temp['DIST'] <= MAX_DIST]
+        #df_temp['RECARGAS'] = self.add_draw(df_temp.index.values, df_temp['TERMINALES'])
+        # self.df.set_value(ind[0],self.df['DRAW'],[[0.7, 0.2, 0.1]])
+        draw_array = np.random.choice(np.array([1, 0, 0]), 3, p=[0.7, 0.2, 0.1], replace=False)
+        self.df.at[ind[0], 'DRAW'] = self.df.loc[ind[0], 'DRAW'] + draw_array
+        print("------------------")
+        example = self.df.loc[ind[0], ['TERMINALES']] * 1000
+        print(self.df.loc[ind[0], ['TERMINALES', 'DRAW']])
+        print(example.loc[ind[0], 'TERMINALES'] - self.df.loc[ind[0], 'DRAW'])
+        df_temp1 = pd.DataFrame(self.df, index=ind[0], columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO', 'DRAW'])
+        #print(df_temp1)
         endTime = time.time()
-        print("time for haversine_np:" + str(endTime - startTime))
+        #print("time for haversine_np:" + str(endTime - startTime))
         return df_temp
 
     def haversine_np(self, lat1, lon1, lat2, lon2):
@@ -148,6 +162,20 @@ class AtmLocator(object):
             km = 6367 * c
             return km
 
+    def add_draw(self, index, number_atm):
+        print(index)
+        print(number_atm)
+        percent = np.array([[0.7, 0.2, 0.1]])
+        dictionary = dict(zip(index, percent))
+        number_a = number_atm * 1000
+        print(number_a - number_atm)
+        for key, value in dictionary:
+            if (self.history.get(key)):
+                self.history[key] += value
+            else:
+                self.history[key] = value
+        #self.add_buffer(index)
+        return number_atm
 
 if __name__ == '__main__':
     tb = TelegramBot()
