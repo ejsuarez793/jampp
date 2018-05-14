@@ -5,16 +5,17 @@ import telegram
 from sklearn.neighbors import KDTree
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import time
-import sys
+import os
 
 TELEGRAM_TOKEN = '521985001:AAFjybE5ZOIlxdSzozxjPa0Gx0lU1EqIzC4'
 MAPS_TOKEN = 'AIzaSyCwkxYSmXosfXb6_YtmbE5USz8OigOHjws'
 MAPS_URL = 'https://maps.googleapis.com/maps/api/staticmap?'
-CSV_FILE = 'https://data.buenosaires.gob.ar/api/files/cajeros-automaticos.csv/download/csv'
-# CSV_FILE = 'cajeros-automaticos.csv'
+CSV_FILE_URL = 'https://data.buenosaires.gob.ar/api/files/cajeros-automaticos.csv/download/csv'
+CSV_FILE_LOCAL = "./cajeros-automaticos-procesados.csv"
 N_ATM = 3
 MIN_ATM_BANK = 1  # min atm number per bank, dataset have some row with 0 atms
 MAX_DIST = 0.5  # in km
+N_DRAWS = 10  # number of draws from atm before saving into csv.
 
 
 class TelegramBot(object):
@@ -30,7 +31,7 @@ class TelegramBot(object):
         self.dispatcher.add_handler(CommandHandler('banelco', self.command))
         self.dispatcher.add_handler(MessageHandler(Filters.location, self.location))
         endTime = time.time()
-        print("init time: " + str(startTime - endTime))
+        print("init time: " + str(endTime - startTime))
 
     def start(self, bot, update):
         bot.send_message(chat_id=update.message.chat_id,
@@ -49,8 +50,11 @@ class TelegramBot(object):
                          reply_markup=reply_markup)
 
     def location(self, bot, update):
+        startTime = time.time()
         user_lat = update.message.location.latitude
         user_lon = update.message.location.longitude
+        # user_lat = -34.635479
+        # user_lon = -58.586222
         atm_types = ['banelco', 'link']
         atm_type = ""
 
@@ -60,11 +64,14 @@ class TelegramBot(object):
                 break
 
         df = self.atm_locator.lookup(user_lat, user_lon, atm_type)
-        print(df)
+
         bot.send_message(chat_id=update.message.chat_id,
                          text=self.generate_resp_msg(df))
         bot.send_message(chat_id=update.message.chat_id,
                          text=self.generate_static_map(user_lat, user_lon, df))
+
+        endTime = time.time()
+        print("response time:" + str(endTime - startTime))
 
     # bien -0.0006422996520996094
     def generate_resp_msg(self, df):
@@ -72,9 +79,12 @@ class TelegramBot(object):
         i = 1
         msg = "{})\nEl Banco: {} posee {} teminal(es) de la red {} con un aprox. de {} retiros disponibles y se encuentra ubicado en {}\n\n"
 
-        for index, row in df.iterrows():
-            resp_msg += msg.format(str(i), row['BANCO'], str(row['TERMINALES']), row['RED'], str(row['RECARGAS']), row['DOM_GEO'])
-            i += 1
+        if df is not None:
+            for index, row in df.iterrows():
+                resp_msg += msg.format(str(i), row['BANCO'], str(row['TERMINALES']), row['RED'], str(row['RECARGAS']), row['DOM_GEO'])
+                i += 1
+        else:
+            resp_msg = "No se encontró cajeros cercanos a su ubicación, gracias por usar el servicio Banjampp."
 
         return resp_msg
 
@@ -88,9 +98,10 @@ class TelegramBot(object):
         params = 'center={}&size={}&zoom={}&key={}'.format(center, size, zoom, MAPS_TOKEN)
         params += marker.format("blue", "V", center)
 
-        for index, row in df.iterrows():
-            params += marker.format("red", str(i), "{},{}".format(row['LAT'], row['LNG']))
-            i += 1
+        if df is not None:
+            for index, row in df.iterrows():
+                params += marker.format("red", str(i), "{},{}".format(row['LAT'], row['LNG']))
+                i += 1
 
         return MAPS_URL + params
 
@@ -101,32 +112,54 @@ class TelegramBot(object):
 class AtmLocator(object):
 
     def __init__(self):
+        self.fh = FileHandler()
         self.df = self.__clean_dataset()
         # Create a 3D-Tree with RED_CODE as 1 if RED values are 'BANELCO' and 0 if they're 'LINK'
         self.tree = KDTree(np.array(self.df[['LAT', 'LNG', 'RED_CODE']]), leaf_size=3)
 
     def __clean_dataset(self):
-        df = pd.read_csv(CSV_FILE, sep=';')
-        dfFiltered = df.filter(items=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO'])
-        dfFilteredNoNan = dfFiltered.dropna(axis=0, how='any')
-        # change float 0,0 notation to 0.0
-        dfFilteredNoNan.loc[:, 'LAT'] = dfFilteredNoNan['LAT'].apply(lambda s: float(s.replace(',', '.')))
-        dfFilteredNoNan.loc[:, 'LNG'] = dfFilteredNoNan['LNG'].apply(lambda s: float(s.replace(',', '.')))
-        # create new column with RED_CODE, used to build 3D-Tree
-        dfFilteredNoNan.loc[:, 'RED_CODE'] = dfFilteredNoNan['RED'].apply(lambda red: 1 if red == "BANELCO" else 0)
-        dfFilteredNoNan.loc[:, 'DRAW'] = 0
-        dfFilteredNoNan.loc[:, 'RECARGAS'] = dfFilteredNoNan['TERMINALES'] * 1000
-        # this line remove locations with 0 atm, but LINK atm all have 0 from dataset
-        # dfFilteredNoNan = dfFilteredNoNan[dfFilteredNoNan['TERMINALES'] >= MIN_ATM_BANK]
 
-        return dfFilteredNoNan
+        # if there is a local csv file read that
+        df = self.fh.read_file()
+        if df is not None:
+            return df
+        else:
+            df = pd.read_csv(CSV_FILE_URL, sep=';')
+            df = df.filter(items=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO'])
+            df = df.dropna(axis=0, how='any')
+            # change float 0,0 notation to 0.0
+            df.loc[:, 'LAT'] = df['LAT'].apply(lambda s: float(s.replace(',', '.')))
+            df.loc[:, 'LNG'] = df['LNG'].apply(lambda s: float(s.replace(',', '.')))
+            # create new column with RED_CODE, used to build 3D-Tree
+            df.loc[:, 'RED_CODE'] = df['RED'].apply(lambda red: 1 if red == "BANELCO" else 0)
+            df.loc[:, 'DRAW'] = 0
+            df.loc[df.index[df['RED'] == 'LINK'], 'TERMINALES'] = 1
+            # this line remove locations with 0 atm, but LINK atm all have 0 from dataset
+            # dfFilteredNoNan = dfFilteredNoNan[dfFilteredNoNan['TERMINALES'] >= MIN_ATM_BANK]
+            df.loc[:, 'RECARGAS'] = df['TERMINALES'] * 1000
+
+            self.fh.write_file(df)  # save cleaned file immediately
+
+        return df
 
     def lookup(self, user_lat, user_lon, atm_type):
 
-        df_temp, ind = self.__query(user_lat, user_lon, atm_type)
+        # startTimeQ = time.time()
+        df_temp = self.__query(user_lat, user_lon, atm_type)
+        # endTimeQ = time.time()
+        # startTimeD = time.time()
         df_temp = self.__distance_calc(user_lat, user_lon, df_temp)
+        # endTimeD = time.time()
+        # startTimeM = time.time()
+        if df_temp.index.size <= 0:
+            return None
         self.__money_draw(df_temp.index.values)
+        self.fh.write_file(self.df)
+        # endTimeM = time.time()
 
+        """print("query: {}\n distance: {}\n money: {}\n".format(str(endTimeQ - startTimeQ),
+                                                                 str(endTimeD - startTimeD),
+                                                                 str(endTimeM - startTimeM)))"""
         return df_temp
 
     def __query(self, user_lat, user_lon, atm_type):
@@ -136,10 +169,11 @@ class AtmLocator(object):
 
         dist, ind = self.tree.query(user_location, k=N_ATM)
 
-        return (pd.DataFrame(self.df,
-                             index=ind[0],
-                             columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO', 'DRAW', 'RECARGAS']),
-                ind)
+        df = pd.DataFrame(self.df,
+                          index=ind[0],
+                          columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO', 'DRAW', 'RECARGAS'])
+
+        return df[df['RECARGAS'] > 0]
 
     def __distance_calc(self, user_lat, user_lon, df_temp):
 
@@ -189,6 +223,26 @@ class AtmLocator(object):
         self.df.loc[ind, 'RECARGAS'] = self.df.loc[ind, 'RECARGAS'] - draw_array
 
 
+class FileHandler(object):
+
+    def __init__(self):
+        self.n_writes = 0
+
+    def read_file(self):
+        if os.path.exists(CSV_FILE_LOCAL):
+            df = pd.read_csv(CSV_FILE_LOCAL, sep=';')
+        else:
+            df = None
+        return df
+
+    def write_file(self, df):
+        if (self.n_writes % 10 == 0):
+            df.to_csv(CSV_FILE_LOCAL, sep=";", index=False)
+            print("local csv file saved")
+        self.n_writes += 1
+
+
 if __name__ == '__main__':
     tb = TelegramBot()
     tb.start_bot()
+    print("Running Bot...")
