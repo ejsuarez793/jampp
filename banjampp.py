@@ -133,7 +133,8 @@ class AtmLocator(object):
             # create new column with RED_CODE, used to build 3D-Tree
             df.loc[:, 'RED_CODE'] = df['RED'].apply(lambda red: 1 if red == "BANELCO" else 0)
             df.loc[:, 'DRAW'] = 0
-            df.loc[df.index[df['RED'] == 'LINK'], 'TERMINALES'] = 1
+            # we asume that each LINK atm location has two terminals
+            df.loc[df.index[df['RED'] == 'LINK'], 'TERMINALES'] = 2
             # this line remove locations with 0 atm, but LINK atm all have 0 from dataset
             # dfFilteredNoNan = dfFilteredNoNan[dfFilteredNoNan['TERMINALES'] >= MIN_ATM_BANK]
             df.loc[:, 'RECARGAS'] = df['TERMINALES'] * 1000
