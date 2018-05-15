@@ -28,18 +28,18 @@ class TelegramBot(object):
         self.dispatcher = self.updater.dispatcher
         self.atm_locator = AtmLocator()
 
-        self.dispatcher.add_handler(CommandHandler('start', self.start))
-        self.dispatcher.add_handler(CommandHandler('link', self.command))
-        self.dispatcher.add_handler(CommandHandler('banelco', self.command))
-        self.dispatcher.add_handler(MessageHandler(Filters.location, self.location))
+        self.dispatcher.add_handler(CommandHandler('start', self.__start))
+        self.dispatcher.add_handler(CommandHandler('link', self.__command))
+        self.dispatcher.add_handler(CommandHandler('banelco', self.__command))
+        self.dispatcher.add_handler(MessageHandler(Filters.location, self.__location))
         endTime = time.time()
         print("init time: " + str(endTime - startTime))
 
-    def start(self, bot, update):
+    def __start(self, bot, update):
         bot.send_message(chat_id=update.message.chat_id,
                          text="Hola!!! Soy el bot más inteligete de Banjampp!")
 
-    def command(self, bot, update):
+    def __command(self, bot, update):
         atm_type = update.message.text.replace('/', '')
         text = "Hola! para enviarte los cajeros de la red {} debo solicitar tu ubicación".format(atm_type.upper())
 
@@ -51,7 +51,7 @@ class TelegramBot(object):
                          text=text,
                          reply_markup=reply_markup)
 
-    def location(self, bot, update):
+    def __location(self, bot, update):
         startTime = time.time()
         user_lat = update.message.location.latitude
         user_lon = update.message.location.longitude
@@ -68,14 +68,14 @@ class TelegramBot(object):
         df = self.atm_locator.lookup(user_lat, user_lon, atm_type)
 
         bot.send_message(chat_id=update.message.chat_id,
-                         text=self.generate_resp_msg(df))
+                         text=self.__generate_resp_msg(df))
         bot.send_message(chat_id=update.message.chat_id,
-                         text=self.generate_static_map(user_lat, user_lon, df))
+                         text=self.__generate_static_map(user_lat, user_lon, df))
 
         endTime = time.time()
         print("Request response time:" + str(endTime - startTime))
 
-    def generate_resp_msg(self, df):
+    def __generate_resp_msg(self, df):
         resp_msg = ""
         i = 1
         msg = "{})\nEl Banco: {} posee {} teminal(es) de la red {} con un aprox. de {} retiros disponibles y se encuentra ubicado en {}\n\n"
@@ -89,7 +89,7 @@ class TelegramBot(object):
 
         return resp_msg
 
-    def generate_static_map(self, user_lat, user_lon, df):
+    def __generate_static_map(self, user_lat, user_lon, df):
         center = '{},{}'.format(str(user_lat), str(user_lon))
         size = '500x400'
         zoom = '15'
@@ -232,7 +232,7 @@ class FileHandler(object):
         return df
 
     def write_file(self, df):
-        if (self.n_writes % 10 == 0):
+        if (self.n_writes % N_DRAWS == 0):
             df.to_csv(CSV_FILE_LOCAL, sep=";", index=False)
             print("LOCAL CSV FILE CREATED!!")
         self.n_writes += 1
