@@ -39,7 +39,7 @@ class TelegramBot(object):
 
     def command(self, bot, update):
         atm_type = update.message.text.replace('/', '')
-        text = "Hola! para enviarte los cajeros de la red {} debo solicitar tu ubicación".format(atm_type)
+        text = "Hola! para enviarte los cajeros de la red {} debo solicitar tu ubicación".format(atm_type.upper())
 
         keyboard = telegram.KeyboardButton("Oprime para confirmar!",
                                            request_contact=None,
@@ -53,13 +53,11 @@ class TelegramBot(object):
         startTime = time.time()
         user_lat = update.message.location.latitude
         user_lon = update.message.location.longitude
-        # user_lat = -34.635479
-        # user_lon = -58.586222
-        atm_types = ['banelco', 'link']
+        atm_types = ['BANELCO', 'LINK']
         atm_type = ""
 
         for at in atm_types:
-            if at in update.message.reply_to_message.text:
+            if at in update.message.reply_to_message.text.upper():
                 atm_type = at
                 break
 
@@ -73,7 +71,6 @@ class TelegramBot(object):
         endTime = time.time()
         print("response time:" + str(endTime - startTime))
 
-    # bien -0.0006422996520996094
     def generate_resp_msg(self, df):
         resp_msg = ""
         i = 1
@@ -88,7 +85,6 @@ class TelegramBot(object):
 
         return resp_msg
 
-    # bien -0.0023131370544433594
     def generate_static_map(self, user_lat, user_lon, df):
         center = '{},{}'.format(str(user_lat), str(user_lon))
         size = '500x400'
@@ -113,66 +109,31 @@ class AtmLocator(object):
 
     def __init__(self):
         self.fh = FileHandler()
-        self.df = self.__clean_dataset()
+        self.df = self.fh.read_file()
         # Create a 3D-Tree with RED_CODE as 1 if RED values are 'BANELCO' and 0 if they're 'LINK'
         self.tree = KDTree(np.array(self.df[['LAT', 'LNG', 'RED_CODE']]), leaf_size=3)
 
-    def __clean_dataset(self):
-
-        # if there is a local csv file read that
-        df = self.fh.read_file()
-        if df is not None:
-            return df
-        else:
-            df = pd.read_csv(CSV_FILE_URL, sep=';')
-            df = df.filter(items=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO'])
-            df = df.dropna(axis=0, how='any')
-            # change float 0,0 notation to 0.0
-            df.loc[:, 'LAT'] = df['LAT'].apply(lambda s: float(s.replace(',', '.')))
-            df.loc[:, 'LNG'] = df['LNG'].apply(lambda s: float(s.replace(',', '.')))
-            # create new column with RED_CODE, used to build 3D-Tree
-            df.loc[:, 'RED_CODE'] = df['RED'].apply(lambda red: 1 if red == "BANELCO" else 0)
-            df.loc[:, 'DRAW'] = 0
-            # we asume that each LINK atm location has two terminals
-            df.loc[df.index[df['RED'] == 'LINK'], 'TERMINALES'] = 2
-            # this line remove locations with 0 atm, but LINK atm all have 0 from dataset
-            # dfFilteredNoNan = dfFilteredNoNan[dfFilteredNoNan['TERMINALES'] >= MIN_ATM_BANK]
-            df.loc[:, 'RECARGAS'] = df['TERMINALES'] * 1000
-
-            self.fh.write_file(df)  # save cleaned file immediately
-
-        return df
-
     def lookup(self, user_lat, user_lon, atm_type):
 
-        # startTimeQ = time.time()
-        df_temp = self.__query(user_lat, user_lon, atm_type)
-        # endTimeQ = time.time()
-        # startTimeD = time.time()
-        df_temp = self.__distance_calc(user_lat, user_lon, df_temp)
-        # endTimeD = time.time()
-        # startTimeM = time.time()
+        df_temp = self.__distance_calc(user_lat, user_lon, self.__query(user_lat, user_lon, atm_type))
+        # If no atm is close to user return None
         if df_temp.index.size <= 0:
             return None
-        self.__money_draw(df_temp.index.values)
-        self.fh.write_file(self.df)
-        # endTimeM = time.time()
-
-        """print("query: {}\n distance: {}\n money: {}\n".format(str(endTimeQ - startTimeQ),
-                                                                 str(endTimeD - startTimeD),
-                                                                 str(endTimeM - startTimeM)))"""
-        return df_temp
+        else:
+            self.__money_draw(df_temp.index.values)
+            self.fh.write_file(self.df)
+            return df_temp
 
     def __query(self, user_lat, user_lon, atm_type):
         user_location = np.array([[user_lat,
                                    user_lon,
-                                   1 if atm_type == "banelco" else 0]])
+                                   1 if atm_type == "BANELCO" else 0]])
 
         dist, ind = self.tree.query(user_location, k=N_ATM)
 
         df = pd.DataFrame(self.df,
                           index=ind[0],
-                          columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO', 'DRAW', 'RECARGAS'])
+                          columns=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO', 'RETIROS', 'RECARGAS'])
 
         return df[df['RECARGAS'] > 0]
 
@@ -220,7 +181,7 @@ class AtmLocator(object):
             i += 1
 
         draw_array = np.random.choice(np.array(actual_values), ind.size, p=actual_p, replace=False)
-        self.df.at[ind, 'DRAW'] = self.df.loc[ind, 'DRAW'] + draw_array
+        self.df.at[ind, 'RETIROS'] = self.df.loc[ind, 'RETIROS'] + draw_array
         self.df.loc[ind, 'RECARGAS'] = self.df.loc[ind, 'RECARGAS'] - draw_array
 
 
@@ -230,10 +191,28 @@ class FileHandler(object):
         self.n_writes = 0
 
     def read_file(self):
+        # local file exists
         if os.path.exists(CSV_FILE_LOCAL):
             df = pd.read_csv(CSV_FILE_LOCAL, sep=';')
+        # if not we read from URL and "clean" the data
         else:
-            df = None
+            df = pd.read_csv(CSV_FILE_URL, sep=';')
+            df = df.filter(items=['ID', 'LAT', 'LNG', 'BANCO', 'RED', 'DOM_GEO', 'TERMINALES', 'BARRIO'])
+            df = df.dropna(axis=0, how='any')
+            # change float 0,0 notation to 0.0
+            df.loc[:, 'LAT'] = df['LAT'].apply(lambda s: float(s.replace(',', '.')))
+            df.loc[:, 'LNG'] = df['LNG'].apply(lambda s: float(s.replace(',', '.')))
+            # create new column with RED_CODE, used to build 3D KD-Tree
+            df.loc[:, 'RED_CODE'] = df['RED'].apply(lambda red: 1 if red == "BANELCO" else 0)
+            df.loc[:, 'RETIROS'] = 0
+            # we asume that each LINK atm location has two terminals
+            df.loc[df.index[df['RED'] == 'LINK'], 'TERMINALES'] = 2
+            # this line remove locations with 0 atm, but LINK atm all have 0 from dataset
+            # dfFilteredNoNan = dfFilteredNoNan[dfFilteredNoNan['TERMINALES'] >= MIN_ATM_BANK]
+            df.loc[:, 'RECARGAS'] = df['TERMINALES'] * 1000
+
+            self.write_file(df)  # save cleaned file immediately
+
         return df
 
     def write_file(self, df):
