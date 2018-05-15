@@ -58,6 +58,8 @@ class TelegramBot(object):
         atm_types = ['BANELCO', 'LINK']
         atm_type = ""
 
+        print("Request from {} with chat_id: {}".format(update.message.chat.first_name, update.message.chat.id))
+
         for at in atm_types:
             if at in update.message.reply_to_message.text.upper():
                 atm_type = at
@@ -71,7 +73,7 @@ class TelegramBot(object):
                          text=self.generate_static_map(user_lat, user_lon, df))
 
         endTime = time.time()
-        print("response time:" + str(endTime - startTime))
+        print("Request response time:" + str(endTime - startTime))
 
     def generate_resp_msg(self, df):
         resp_msg = ""
@@ -119,12 +121,12 @@ class AtmLocator(object):
     def lookup(self, user_lat, user_lon, atm_type):
 
         df_temp = self.__distance_calc(user_lat, user_lon, self.__query(user_lat, user_lon, atm_type))
-        # If no atm is close to user return None
+        # If no atm is close to user location return None
         if df_temp.index.size <= 0:
             return None
         else:
+            self.__suply_atm(df_temp)
             self.__money_draw(df_temp.index.values)
-            self.fh.write_file(self.df)
             return df_temp
 
     def __query(self, user_lat, user_lon, atm_type):
@@ -162,13 +164,23 @@ class AtmLocator(object):
 
         return df_temp[df_temp['DIST'] <= MAX_DIST]
 
+    def __suply_atm(self, df_temp):
+        now = datetime.datetime.today()
+        now8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        # if there is more than 1 day of diff and day isn't satuday (5) or sunday  (6) supply atms
+        if ((now - self.last_supply).days > 0 and now.weekday not in [5, 6]):
+            self.df.loc[:, 'RECARGAS'] = self.df['TERMINALES'] * 1000
+            df_temp.loc[:, 'RECARGAS'] = df_temp['TERMINALES'] * 1000
+            self.last_supply = now8am
+            self.fh.write_supply_date(now8am)
+
     def __money_draw(self, ind):
         p = [0.7, 0.2, 0.1]
         values = [1, 0, 0]
         actual_p = []
         actual_values = []
         i = 0
-        self.fh.write_supply_date()
+
         while i < ind.size:
             actual_values.append(values[i])
 
@@ -186,6 +198,7 @@ class AtmLocator(object):
         draw_array = np.random.choice(np.array(actual_values), ind.size, p=actual_p, replace=False)
         self.df.at[ind, 'RETIROS'] = self.df.loc[ind, 'RETIROS'] + draw_array
         self.df.loc[ind, 'RECARGAS'] = self.df.loc[ind, 'RECARGAS'] - draw_array
+        self.fh.write_file(self.df)
 
 
 class FileHandler(object):
@@ -221,18 +234,23 @@ class FileHandler(object):
     def write_file(self, df):
         if (self.n_writes % 10 == 0):
             df.to_csv(CSV_FILE_LOCAL, sep=";", index=False)
-            print("local csv file saved")
+            print("LOCAL CSV FILE CREATED!!")
         self.n_writes += 1
 
     def read_atm_supply_date(self):
-        day = 6 # 0 monday 6 sunday
-        with open(SUPPLY_DATE_TXT) as file:
-            day = file.read()
-        return day
+        now = datetime.datetime.today()
+        # change day to yesterday in case there is no supply_date file
+        date = now.replace(day=(now.day - 1), hour=8, minute=0, second=0, microsecond=0)
+        if os.path.exists(SUPPLY_DATE_TXT):
+            with open(SUPPLY_DATE_TXT) as file:
+                date_string = file.read()
+                date = datetime.datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S')
+        return date
 
-    def write_supply_date(self):
+    def write_supply_date(self, supply_date):
         with open(SUPPLY_DATE_TXT, "w") as file:
-            file.write('%d' % datetime.datetime.today().weekday())
+            file.write("%s" % supply_date)
+            print("SUPPLY DATE FILE UPDATED!!")
 
 
 if __name__ == '__main__':
