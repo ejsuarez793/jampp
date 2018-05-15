@@ -6,12 +6,14 @@ from sklearn.neighbors import KDTree
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import time
 import os
+import datetime
 
 TELEGRAM_TOKEN = '521985001:AAFjybE5ZOIlxdSzozxjPa0Gx0lU1EqIzC4'
 MAPS_TOKEN = 'AIzaSyCwkxYSmXosfXb6_YtmbE5USz8OigOHjws'
 MAPS_URL = 'https://maps.googleapis.com/maps/api/staticmap?'
 CSV_FILE_URL = 'https://data.buenosaires.gob.ar/api/files/cajeros-automaticos.csv/download/csv'
 CSV_FILE_LOCAL = "./cajeros-automaticos-procesados.csv"
+SUPPLY_DATE_TXT = "ultimo-reabastecimiento.txt"
 N_ATM = 3
 MIN_ATM_BANK = 1  # min atm number per bank, dataset have some row with 0 atms
 MAX_DIST = 0.5  # in km
@@ -110,6 +112,7 @@ class AtmLocator(object):
     def __init__(self):
         self.fh = FileHandler()
         self.df = self.fh.read_file()
+        self.last_supply = self.fh.read_atm_supply_date()
         # Create a 3D-Tree with RED_CODE as 1 if RED values are 'BANELCO' and 0 if they're 'LINK'
         self.tree = KDTree(np.array(self.df[['LAT', 'LNG', 'RED_CODE']]), leaf_size=3)
 
@@ -165,7 +168,7 @@ class AtmLocator(object):
         actual_p = []
         actual_values = []
         i = 0
-
+        self.fh.write_supply_date()
         while i < ind.size:
             actual_values.append(values[i])
 
@@ -220,6 +223,16 @@ class FileHandler(object):
             df.to_csv(CSV_FILE_LOCAL, sep=";", index=False)
             print("local csv file saved")
         self.n_writes += 1
+
+    def read_atm_supply_date(self):
+        day = 6 # 0 monday 6 sunday
+        with open(SUPPLY_DATE_TXT) as file:
+            day = file.read()
+        return day
+
+    def write_supply_date(self):
+        with open(SUPPLY_DATE_TXT, "w") as file:
+            file.write('%d' % datetime.datetime.today().weekday())
 
 
 if __name__ == '__main__':
